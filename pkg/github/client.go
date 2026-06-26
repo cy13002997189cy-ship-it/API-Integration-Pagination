@@ -28,6 +28,7 @@ func (f *IssueFetcher) FetchIssues(ctx context.Context, owner, repo string, sinc
 	}
 
 	var allIssues []*github.Issue
+	seenPages := map[int]struct{}{opt.Page: {}}
 	for {
 		issues, resp, err := f.client.Issues.ListByRepository(ctx, owner, repo, opt)
 		if err != nil {
@@ -37,6 +38,13 @@ func (f *IssueFetcher) FetchIssues(ctx context.Context, owner, repo string, sinc
 		if resp.NextPage == 0 {
 			break
 		}
+		if resp.NextPage <= opt.Page {
+			return nil, fmt.Errorf("pagination did not advance: current page %d, next page %d", opt.Page, resp.NextPage)
+		}
+		if _, ok := seenPages[resp.NextPage]; ok {
+			return nil, fmt.Errorf("pagination loop detected at page %d", resp.NextPage)
+		}
+		seenPages[resp.NextPage] = struct{}{}
 		opt.Page = resp.NextPage
 	}
 	return allIssues, nil
