@@ -21,7 +21,8 @@ func TestFetchIssues_Pagination(t *testing.T) {
 	sinceTime := time.Now().Add(-24 * time.Hour).Truncate(time.Second)
 	sinceStr := sinceTime.Format(time.RFC3339)
 
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	var server *httptest.Server
+	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		q := r.URL.Query()
 		if q.Get("since") != sinceStr {
 			t.Errorf("expected since parameter %q, got %q", sinceStr, q.Get("since"))
@@ -96,7 +97,8 @@ func TestFetchIssues_Pagination(t *testing.T) {
 }
 
 func TestFetchIssues_RateLimit(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	var server *httptest.Server
+	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-RateLimit-Limit", "60")
 		w.Header().Set("X-RateLimit-Remaining", "0")
 		w.Header().Set("X-RateLimit-Reset", strconv.FormatInt(time.Now().Add(1*time.Hour).Unix(), 10))
@@ -122,7 +124,8 @@ func TestFetchIssues_RateLimit(t *testing.T) {
 }
 
 func TestFetchIssues_EmptyPageWithNext(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	var server *httptest.Server
+	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		q := r.URL.Query()
 		pageStr := q.Get("page")
 		page := 1
@@ -173,6 +176,43 @@ func TestFetchIssues_EmptyPageWithNext(t *testing.T) {
 
 	if len(issues) != 1 {
 		t.Errorf("expected 1 issue, got %d", len(issues))
+	}
+}
+
+func TestFetchIssues_DetectsPaginationLoop(t *testing.T) {
+	requests := 0
+
+	var server *httptest.Server
+	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		if requests > 2 {
+			t.Fatal("pagination loop was not terminated")
+		}
+
+		issues := []*github.Issue{
+			{ID: github.Int64(1), Title: github.String("Issue 1")},
+		}
+
+		linkHeader := fmt.Sprintf("<%s?page=1>; rel=\"next\"", server.URL+r.URL.Path)
+		w.Header().Set("Link", linkHeader)
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(issues)
+	}))
+	defer server.Close()
+
+	httpClient := server.Client()
+	client := github.NewClient(httpClient)
+	baseURL, _ := url.Parse(server.URL + "/")
+	client.BaseURL = baseURL
+
+	fetcher := NewIssueFetcher(client)
+	_, err := fetcher.FetchIssues(context.Background(), "owner", "repo", time.Now(), 2)
+	if err == nil {
+		t.Fatal("expected pagination loop error, got nil")
+	}
+
+	if !strings.Contains(err.Error(), "pagination") {
+		t.Errorf("expected pagination loop error, got: %v", err)
 	}
 }
 
